@@ -251,7 +251,7 @@ create(char *path, short type, short major, short minor)
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
-    if(type == T_FILE && ip->type == T_FILE)
+    if((type == T_FILE && ip->type == T_FILE) || (type == T_DUB_BLK_FILE && ip->type == T_DUB_BLK_FILE))
       return ip;
     iunlockput(ip);
     return 0;
@@ -285,6 +285,7 @@ create(char *path, short type, short major, short minor)
 int
 sys_open(void)
 {
+
   char *path;
   int fd, omode;
   struct file *f;
@@ -296,7 +297,7 @@ sys_open(void)
   begin_op();
 
   if(omode & O_CREATE){
-    ip = create(path, T_FILE, 0, 0);
+    ip = create(path, T_DUB_BLK_FILE , 0, 0);
     if(ip == 0){
       end_op();
       return -1;

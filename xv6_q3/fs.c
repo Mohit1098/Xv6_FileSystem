@@ -58,7 +58,7 @@ balloc(uint dev)
 {
   int b, bi, m;
   struct buf *bp;
-
+  // cprintf("Helo");
   bp = 0;
   for(b = 0; b < sb.size; b += BPB){
     bp = bread(dev, BBLOCK(b, sb));
@@ -76,6 +76,34 @@ balloc(uint dev)
   }
   panic("balloc: out of blocks");
 }
+
+// static uint
+// myballoc(uint dev)
+// {
+//   int b, bi, m,m1;
+//   struct buf *bp;
+//   // cprintf("Helo");
+//   bp = 0;
+//   for(b = 0; b < sb.size; b += BPB){
+//     bp = bread(dev, BBLOCK(b, sb));
+    
+//     for(bi = 0; bi +1 < BPB && b + bi +1< sb.size; bi++){
+//       m = 1 << (bi % 8);
+//       m1 = 1 << ((bi+1) % 8);
+//       if(((bp->data[bi/8] & m) == 0) &&  ((bp->data[(bi+1)/8] & m1) == 0)  ){  // Is block free?
+//         bp->data[bi/8] |= m;  // Mark block in use.
+//         bp->data[(bi+1)/8] |= m1;  // Mark block in use.
+//         log_write(bp);
+//         brelse(bp);
+//         bzero(dev, b + bi);
+//         bzero(dev, b + bi+1);
+//         return b + bi;
+//       }
+//     }
+//     brelse(bp);
+//   }
+//   panic("balloc: out of blocks");
+// }
 
 // Free a disk block.
 static void
@@ -219,8 +247,7 @@ ialloc(uint dev, short type)
 // Caller must hold ip->lock.
 void
 iupdate(struct inode *ip)
-{
-  struct buf *bp;
+{ struct buf *bp;
   struct dinode *dip;
 
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
@@ -375,6 +402,8 @@ bmap(struct inode *ip, uint bn)
   uint addr, *a;
   struct buf *bp;
 
+  // cprintf("Helo");
+
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
       ip->addrs[bn] = addr = balloc(ip->dev);
@@ -398,6 +427,62 @@ bmap(struct inode *ip, uint bn)
 
   panic("bmap: out of range");
 }
+
+static uint
+mybmap(struct inode *ip, uint bn)
+{
+  uint addr, *a;
+  struct buf *bp;
+
+	int i,count=0;
+
+	for(i=0;i<NDIRECT;i+=2){
+
+      if(ip->addrs[i]==0){
+       addr = balloc(ip->dev);
+       if(i>0  && ip->addrs[i-1]==addr-1){  
+          ip->addrs[i-1]=addr;
+        }
+        else{
+          ip->addrs[i]=addr;
+          ip->addrs[i+1]=addr;
+        }
+       
+       return addr;
+    }
+
+		count+=(ip->addrs[i+1]-ip->addrs[i]+1);
+		if(count>bn){
+			addr=bn-(count-(ip->addrs[i+1]-ip->addrs[i]+1));
+			addr=ip->addrs[i]+addr;
+			return addr;
+		}
+
+	
+	}
+
+  
+  bn -= count;
+
+  if(bn < NINDIRECT){
+    // Load indirect block, allocating if necessary.
+    if((addr = ip->addrs[NDIRECT]) == 0)
+      ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[bn]) == 0){
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+
+  panic("bmap: out of range");
+}
+
+
+
 
 // Truncate inode (discard contents).
 // Only called when the inode has no links
@@ -446,6 +531,27 @@ stati(struct inode *ip, struct stat *st)
   st->size = ip->size;
 }
 
+int 
+myreadi(struct inode *ip, char *dst, uint off, uint n){
+  uint tot, m;
+  struct buf *bp;
+
+  if(off > ip->size || off + n < off)
+    return -1;
+  if(off + n > ip->size)
+    n = ip->size - off;
+
+  for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+
+    bp = bread(ip->dev, mybmap(ip, off/BSIZE));
+    m = min(n - tot, BSIZE - off%BSIZE);
+    memmove(dst, bp->data + off%BSIZE, m);
+    brelse(bp);
+  }
+  return n;
+
+}
+
 //PAGEBREAK!
 // Read data from inode.
 // Caller must hold ip->lock.
@@ -454,6 +560,10 @@ readi(struct inode *ip, char *dst, uint off, uint n)
 {
   uint tot, m;
   struct buf *bp;
+
+  if(ip->type== T_EXT_FILE){
+    return myreadi(ip,dst,off,n);
+  }
 
   if(ip->type == T_DEV){
     if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].read)
@@ -467,10 +577,35 @@ readi(struct inode *ip, char *dst, uint off, uint n)
     n = ip->size - off;
 
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
+
     bp = bread(ip->dev, bmap(ip, off/BSIZE));
     m = min(n - tot, BSIZE - off%BSIZE);
     memmove(dst, bp->data + off%BSIZE, m);
     brelse(bp);
+  }
+  return n;
+}
+
+int mywritei(struct inode *ip, char *src, uint off, uint n){
+  uint tot, m;
+  struct buf *bp;
+
+  if(off > ip->size || off + n < off)
+    return -1;
+  if(off + n > MAXFILE*BSIZE)
+    return -1;
+
+  for(tot=0; tot<n; tot+=m, off+=m, src+=m){
+    bp = bread(ip->dev, mybmap(ip, off/BSIZE));
+    m = min(n - tot, BSIZE - off%BSIZE);
+    memmove(bp->data + off%BSIZE, src, m);
+    log_write(bp);
+    brelse(bp);
+  }
+
+  if(n > 0 && off > ip->size){
+    ip->size = off;
+    iupdate(ip);
   }
   return n;
 }
@@ -481,14 +616,20 @@ readi(struct inode *ip, char *dst, uint off, uint n)
 int
 writei(struct inode *ip, char *src, uint off, uint n)
 {
-  uint tot, m;
-  struct buf *bp;
 
-  if(ip->type == T_DEV){
+  if(ip->type == T_EXT_FILE){
+    return mywritei(ip,src,off,n);
+  }
+
+   if(ip->type == T_DEV){
     if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].write)
       return -1;
     return devsw[ip->major].write(ip, src, n);
   }
+
+
+  uint tot, m;
+  struct buf *bp;
 
   if(off > ip->size || off + n < off)
     return -1;
@@ -508,6 +649,7 @@ writei(struct inode *ip, char *src, uint off, uint n)
     iupdate(ip);
   }
   return n;
+
 }
 
 //PAGEBREAK!
